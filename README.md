@@ -1,4 +1,4 @@
-# LinkedIn Employee Hunter
+# LinkedIn DOM Hunter
 
 **LinkedIn DOM Hunter** scrapes the `/people/` tab of any LinkedIn company page by interacting directly with the DOM via a stealth-patched Chromium instance. It supports pagination, result limiting, and an optional normalization pipeline that strips titles, suffixes, diacritics, and non-alphabetic characters — producing clean `Firstname Lastname` output ready for username generation or further enumeration.
 
