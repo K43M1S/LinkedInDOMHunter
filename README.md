@@ -14,7 +14,7 @@ npm install
 ## Usage
 
 ```
-node linkedinSpray.js -u <company_url> [-n] [-o <output_file>] [-l <limit>]
+node linkedInDOMHunter.js -u <company_url> [-n] [-o <output_file>] [-l <limit>]
 ```
 
 | Flag | Long form | Description |
@@ -30,10 +30,10 @@ node linkedinSpray.js -u <company_url> [-n] [-o <output_file>] [-l <limit>]
 
 ```bash
 # Basic extraction
-node linkedinSpray.js -u "https://www.linkedin.com/company/microsoft/"
+node linkedInDOMHunter.js -u "https://www.linkedin.com/company/microsoft/"
 
 # Limit to 50 results with normalization, save to file
-node linkedinSpray.js -u "https://www.linkedin.com/company/microsoft/" -n -l 50 -o results_microsoft
+node linkedInDOMHunter.js -u "https://www.linkedin.com/company/microsoft/" -n -l 50 -o results_microsoft
 ```
 
 ![PoC](poc.png)
