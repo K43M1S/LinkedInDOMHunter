@@ -20,6 +20,44 @@ class LinkedInHunter {
         return new Promise(resolve => setTimeout(resolve, ms));
     }
 
+    // Card container selectors, tried in order
+    get CARD_SELECTORS() {
+        return [
+            'li.grid.org-people-profile-card__profile-card-spacing',
+            'li[class*="org-people-profile-card"]',
+            '.org-people-profiles-module__profile-list > li',
+            '.scaffold-finite-scroll__content li[class*="grid"]',
+            '.scaffold-finite-scroll__content li',
+        ];
+    }
+
+    // Name element selectors, tried in order inside each card
+    get NAME_SELECTORS() {
+        return [
+            '[data-anonymize="person-name"]',
+            '.artdeco-entity-lockup__title .lt-line-clamp',
+            '.artdeco-entity-lockup__title span',
+            '.artdeco-entity-lockup__title',
+            '.lt-line-clamp--single-line',
+            '.org-people-profile-card__profile-title',
+        ];
+    }
+
+    async waitForProfiles(page, timeout = 20000) {
+        const selectors = this.CARD_SELECTORS;
+        try {
+            await page.waitForFunction(
+                (sels) => sels.some(s => document.querySelector(s) !== null),
+                { timeout },
+                selectors
+            );
+        } catch (_) {
+            const url = page.url();
+            if (!url.includes('linkedin.com')) throw new Error('Not on LinkedIn — check login');
+            throw new Error('No profile cards found. LinkedIn may have changed their DOM or no employees are visible.');
+        }
+    }
+
     async run(companyUrl, normalize = false, outputFile = null, limit = null) {
         this.log(`Target: ${companyUrl}`, 'INFO');
 
@@ -39,7 +77,7 @@ class LinkedInHunter {
         console.log('============================================================\n');
 
         await page.goto('https://www.linkedin.com', { waitUntil: 'networkidle2' });
-        
+
         await new Promise(resolve => {
             process.stdin.once('data', resolve);
         });
@@ -47,41 +85,52 @@ class LinkedInHunter {
         const peopleUrl = companyUrl.replace(/\/$/, '') + '/people/';
         this.log(`Navigating to: ${peopleUrl}`, 'INFO');
         await page.goto(peopleUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-        await this.delay(3000);
+        await this.delay(4000);
 
         this.log(`Extracting employees...`, 'INFO');
-        
+
         let hasMoreResults = true;
         let pageNum = 1;
+        let staleCount = 0;
 
         while (hasMoreResults) {
             this.log(`Page ${pageNum} - extracting profiles...`, 'INFO');
-            
-            await page.waitForSelector('li.grid.org-people-profile-card__profile-card-spacing', { timeout: 15000 });
-            
+
+            await this.waitForProfiles(page);
+
             const newEmployees = await this.extractNames(page);
-            
+            const prevTotal = this.employees.length;
             const uniqueNew = newEmployees.filter(name => !this.employees.includes(name));
             this.employees.push(...uniqueNew);
-            
+
             this.log(`Found ${uniqueNew.length} new (Total: ${this.employees.length})`, 'SUCCESS');
-            
+
+            if (uniqueNew.length === 0) {
+                staleCount++;
+                if (staleCount >= 2) { hasMoreResults = false; break; }
+            } else {
+                staleCount = 0;
+            }
+
             if (limit && this.employees.length >= limit) {
                 this.log(`Limit of ${limit} reached. Stopping extraction.`, 'INFO');
                 this.employees = this.employees.slice(0, limit);
                 break;
             }
-            
+
+            // Try "Show more" button first, then fall back to scroll
             const loadMoreButton = await page.$('button.scaffold-finite-scroll__load-button');
-            
+
             if (loadMoreButton) {
                 const isVisible = await page.evaluate(btn => {
                     const style = window.getComputedStyle(btn);
                     return style.display !== 'none' && style.visibility !== 'hidden';
                 }, loadMoreButton);
-                
+
                 if (isVisible) {
                     this.log(`Loading more results...`, 'INFO');
+                    await page.evaluate(btn => btn.scrollIntoView(), loadMoreButton);
+                    await this.delay(500);
                     await loadMoreButton.click();
                     await this.delay(3000);
                     pageNum++;
@@ -89,7 +138,16 @@ class LinkedInHunter {
                     hasMoreResults = false;
                 }
             } else {
-                hasMoreResults = false;
+                // Scroll to bottom to trigger infinite scroll
+                const prevHeight = await page.evaluate(() => document.body.scrollHeight);
+                await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+                await this.delay(3000);
+                const newHeight = await page.evaluate(() => document.body.scrollHeight);
+                if (newHeight === prevHeight) {
+                    hasMoreResults = false;
+                } else {
+                    pageNum++;
+                }
             }
         }
 
@@ -142,31 +200,37 @@ class LinkedInHunter {
     }
 
     async extractNames(page) {
-        return await page.evaluate(() => {
+        const cardSelectors = this.CARD_SELECTORS;
+        const nameSelectors = this.NAME_SELECTORS;
+
+        return await page.evaluate((cardSels, nameSels) => {
             const names = [];
-            const profileCards = document.querySelectorAll('li.grid.org-people-profile-card__profile-card-spacing');
-            
-            profileCards.forEach(card => {
+
+            // Find whichever card selector works
+            let cards = [];
+            for (const sel of cardSels) {
+                const found = document.querySelectorAll(sel);
+                if (found.length > 0) { cards = Array.from(found); break; }
+            }
+
+            cards.forEach(card => {
                 try {
                     let name = '';
-                    const nameElement = card.querySelector('.artdeco-entity-lockup__title .lt-line-clamp');
-                    if (nameElement) {
-                        name = nameElement.innerText.trim();
+                    for (const sel of nameSels) {
+                        const el = card.querySelector(sel);
+                        if (el) {
+                            name = (el.innerText || el.textContent || '').trim();
+                            if (name.length > 3) break;
+                        }
                     }
-                    
-                    if (!name) {
-                        const altName = card.querySelector('.lt-line-clamp--single-line');
-                        if (altName) name = altName.innerText.trim();
-                    }
-                    
                     if (name && name.length > 3 && !name.includes('LinkedIn Member')) {
                         names.push(name);
                     }
                 } catch(e) {}
             });
-            
+
             return names;
-        });
+        }, cardSelectors, nameSelectors);
     }
 
     displayResults() {
@@ -223,7 +287,7 @@ class LinkedInHunter {
 async function help(){
 console.log(`
 USAGE:
-  node linkedinSpray.js -u <company_url> [-n] [-o <output_file>] [-l <limit>]
+  node linkedInDOMHunter.js -u <company_url> [-n] [-o <output_file>] [-l <limit>]
 
 OPTIONS:
   -u, --url       LinkedIn company page URL
@@ -233,7 +297,7 @@ OPTIONS:
   -h, --help      Show this help message
 
 EXAMPLE:
-  node linkedinSpray.js -u "https://www.linkedin.com/company/microsoft/" -n -l 50 -o results_microsoft
+  node linkedInDOMHunter.js -u "https://www.linkedin.com/company/microsoft/" -n -l 50 -o results_microsoft
 
 NOTE: 
   - Use the company main page URL. The script will automatically go to the /people/ tab
